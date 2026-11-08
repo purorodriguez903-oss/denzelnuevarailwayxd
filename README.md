@@ -38,6 +38,33 @@ Cuando alguien escribe en el chat integrado del canal de voz `➕ Crear VC`:
 
 ---
 
+## 🎫 Sistema de Tickets y Tienda de Productos
+
+El bot incluye un sistema interactivo de compras mediante tickets privados:
+
+- **Canal Oficial del Panel:** `TICKET_CHANNEL_ID` (Por defecto: `1527614381314015252`).
+- **Publicación Automática:** Al encenderse, el bot comprueba el canal y envía el panel interactivo si no existe.
+- **Comando Administrativo:** `/panel_tickets` (permite a los administradores reenviar el panel cuando lo deseen).
+
+### Flujo de Compra:
+1. **Menú Desplegable 1 (iOS):**
+   - 📱 *Panel de iOS*
+   - 🌐 *Proxy de iOS*
+2. **Menú Desplegable 2 (PC):**
+   - 💻 *Complex de PC*
+   - 🔥 *BR Mods*
+3. **Botón '🎫 Generar Ticket':**
+   - Valida la selección del cliente y previene duplicados.
+   - Crea un canal de texto privado exclusivo (`#ticket-{usuario}`).
+   - Asigna permisos automáticos al comprador, al bot y a roles de soporte/vendedores/staff.
+   - Responde al usuario de forma privada con un enlace directo a su nuevo ticket.
+4. **Dentro del Ticket:**
+   - Envía el mensaje: *"Por favor espere a que los vendedores respondan."*
+   - Muestra los datos del cliente y el producto elegido.
+   - Botón rojo **'🔒 Cerrar Ticket'** con confirmación y auto-eliminación en 5 segundos.
+
+---
+
 ## 🛡️ Mecanismos de Protección 24/7
 
 1. **Anti-Desconexión (`Anti-Kick`)**: Vuelve a entrar automáticamente en menos de 1 segundo si lo desconectan.

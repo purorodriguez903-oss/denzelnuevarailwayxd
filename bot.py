@@ -8,6 +8,7 @@ import asyncio
 import logging
 from logging.handlers import RotatingFileHandler
 import unicodedata
+from typing import Optional
 from dotenv import load_dotenv
 
 # Forzar codificación UTF-8 en consolas Windows
@@ -30,6 +31,7 @@ load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 VOICE_CHANNEL_ID = int(os.getenv("VOICE_CHANNEL_ID", "1543395577289777202"))
+TICKET_CHANNEL_ID = int(os.getenv("TICKET_CHANNEL_ID", "1527614381314015252"))
 GUILD_ID = int(os.getenv("GUILD_ID", "1387608034641055785"))
 PORT = int(os.getenv("PORT", "8080"))
 
@@ -118,22 +120,442 @@ def format_uptime(seconds: float) -> str:
         return f"{hours}h {minutes}m"
     return f"{minutes}m"
 
+# ==========================================
+# 💰 PRECIOS OFICIALES DE PRODUCTOS
+# ==========================================
+
+PRODUCT_PRICES = {
+    "Panel de iOS": {
+        "summary": "Mes: $20 USD | Perma: $50 USD",
+        "details": [
+            "• **Mes:** $20 USD",
+            "• **Permanente:** $50 USD"
+        ]
+    },
+    "Proxy de iOS": {
+        "summary": "2 Semanas: $20 USD | Mes: $35 USD | Perma: $100 USD",
+        "details": [
+            "• **2 Semanas:** $20 USD",
+            "• **Mes:** $35 USD",
+            "• **Permanente:** $100 USD"
+        ]
+    },
+    "Complex de PC": {
+        "summary": "Semana: $6 USD | Mes: $20 USD | Perma: $55 USD",
+        "details": [
+            "• **Semana:** $6 USD",
+            "• **Mes:** $20 USD",
+            "• **Permanente:** $55 USD"
+        ]
+    },
+    "BR Mods": {
+        "summary": "Semana: $6 USD | Mes: $15 USD | Perma: $55 USD",
+        "details": [
+            "• **Semana:** $6 USD",
+            "• **Mes:** $15 USD",
+            "• **Permanente:** $55 USD"
+        ]
+    }
+}
+
+# ==========================================
+# 🎫 SISTEMA DE TICKETS (CREACIÓN Y VISTAS)
+# ==========================================
+
+async def create_ticket_for_user(interaction: discord.Interaction, selected_product: str):
+    """Crea el canal privado del ticket para el usuario, envía los precios y reinicia los combos."""
+    guild = interaction.guild
+    if not guild:
+        await interaction.response.send_message("❌ Esta función solo puede utilizarse dentro de un servidor.", ephemeral=True)
+        return
+
+    # Responder / Diferir de inmediato para evitar cualquier timeout de Discord
+    if not interaction.response.is_done():
+        await interaction.response.defer(ephemeral=True)
+
+    # Verificar si el usuario ya tiene un ticket activo
+    user_id_str = str(interaction.user.id)
+    for ch in guild.text_channels:
+        if ch.topic and f"ticket_user_{user_id_str}" in ch.topic:
+            # Reiniciar los combos en el mensaje original para que no queden marcados
+            try:
+                if interaction.message:
+                    await interaction.message.edit(view=TicketPanelView())
+            except Exception:
+                pass
+
+            await interaction.followup.send(
+                f"⚠️ Ya tienes un ticket abierto actualmente.\n👉 **Haz clic aquí para entrar a tu ticket:** {ch.mention}",
+                ephemeral=True
+            )
+            return
+
+    try:
+        clean_name = re.sub(r'[^a-zA-Z0-9]', '', interaction.user.name).lower()[:10] or "cliente"
+        # Nombre descriptivo del canal con producto (ej: ticket-brmods-rafa)
+        slug_product = re.sub(r'[^a-zA-Z0-9]', '', selected_product).lower()[:8]
+        channel_name = f"ticket-{slug_product}-{clean_name}"
+
+        # Categoría: usar la categoría del canal actual o buscar abre Ticket / TICKETS
+        category = interaction.channel.category if interaction.channel else None
+        if not category:
+            category = (
+                discord.utils.get(guild.categories, name="abre Ticket 🤝")
+                or discord.utils.get(guild.categories, name="🎫 TICKETS")
+                or discord.utils.get(guild.categories, name="TICKETS")
+            )
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                attach_files=True,
+                embed_links=True
+            ),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                manage_channels=True,
+                read_message_history=True,
+                embed_links=True,
+                attach_files=True
+            )
+        }
+
+        # Dar acceso a roles de Vendedor / Staff si existen
+        for role in guild.roles:
+            if role.name.lower() in ["vendedor", "vendedores", "staff", "soporte", "admin", "administrador"]:
+                overwrites[role] = discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
+                    attach_files=True,
+                    embed_links=True
+                )
+
+        ticket_channel = await guild.create_text_channel(
+            name=channel_name,
+            category=category,
+            overwrites=overwrites,
+            topic=f"ticket_user_{user_id_str} | Cliente: {interaction.user.name} | Producto: {selected_product}"
+        )
+
+        # Obtener desglose de precios del producto elegido
+        prices_info = PRODUCT_PRICES.get(selected_product, {})
+        prices_list_text = "\n".join(prices_info.get("details", []))
+
+        embed_ticket = discord.Embed(
+            title="🎫 ¡Ticket de Compra Creado!",
+            description=(
+                f"👋 ¡Hola {interaction.user.mention}! Has abierto un ticket para adquirir:\n\n"
+                f"🛒 **Producto solicitado:** `{selected_product}`\n\n"
+                f"💵 **Precios oficiales disponibles:**\n{prices_list_text}\n\n"
+                f"⏳ **Por favor espere a que los vendedores respondan.**\n\n"
+                f"Un vendedor o administrador te atenderá a la brevedad posible con los métodos de pago y la entrega de tu pedido."
+            ),
+            color=discord.Color.from_rgb(0, 230, 118)
+        )
+        embed_ticket.add_field(name="👤 Cliente", value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=True)
+        embed_ticket.add_field(name="📦 Pedido", value=f"**{selected_product}**", inline=True)
+        embed_ticket.set_footer(
+            text="Denzel XT • Si deseas cerrar este ticket, usa el botón rojo de abajo.",
+            icon_url=guild.icon.url if guild.icon else None
+        )
+
+        await ticket_channel.send(
+            content=f"👋 {interaction.user.mention} ¡Bienvenido a tu ticket de compra para **{selected_product}**!",
+            embed=embed_ticket,
+            view=TicketCloseView()
+        )
+
+        interaction.client.user_ticket_selections.pop(interaction.user.id, None)
+
+        # REINICIAR LOS COMBOS EN EL MENSAJE PRINCIPAL A SU PLACEHOLDER ORIGINAL
+        try:
+            if interaction.message:
+                await interaction.message.edit(view=TicketPanelView())
+                logger.info("🔄 Combos del panel reiniciados a sus placeholders por defecto.")
+        except Exception as e:
+            logger.warning(f"Aviso al reiniciar combos en el mensaje: {e}")
+
+        # Responder al usuario enviándolo directamente a su ticket
+        await interaction.followup.send(
+            f"✅ **¡Tu canal de ticket ha sido creado con éxito!**\n\n"
+            f"👉 **Haz clic aquí para entrar a tu ticket:** {ticket_channel.mention}",
+            ephemeral=True
+        )
+        logger.info(f"🎫 Ticket #{ticket_channel.name} creado para {interaction.user.name} ({interaction.user.id}) | Producto: {selected_product}")
+
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "❌ **Error de Permisos:** El bot no tiene el permiso 'Gestionar Canales' para crear tu ticket. Contacta a un administrador.",
+            ephemeral=True
+        )
+    except Exception as e:
+        logger.error(f"❌ Error al crear canal de ticket: {e}", exc_info=True)
+        await interaction.followup.send(
+            f"❌ Ocurrió un error al crear tu ticket: {e}",
+            ephemeral=True
+        )
+
+
+class TicketSelectIOS(discord.ui.Select):
+    """Menú desplegable para productos de iOS con precios."""
+    def __init__(self):
+        options = [
+            discord.SelectOption(
+                label="Panel de iOS",
+                value="Panel de iOS",
+                description="Mes: $20 USD | Permanente: $50 USD",
+                emoji="📱"
+            ),
+            discord.SelectOption(
+                label="Proxy de iOS",
+                value="Proxy de iOS",
+                description="2 Sem: $20 USD | Mes: $35 USD | Perma: $100 USD",
+                emoji="🌐"
+            )
+        ]
+        super().__init__(
+            placeholder="🍎 Selecciona un producto de iOS...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="ticket_select_ios",
+            row=0
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        selected = self.values[0]
+        interaction.client.user_ticket_selections[interaction.user.id] = selected
+        logger.info(f"📱 [SELECCIÓN iOS] {interaction.user.name} eligió: {selected}. Creando ticket...")
+        await create_ticket_for_user(interaction, selected)
+
+
+class TicketSelectPC(discord.ui.Select):
+    """Menú desplegable para productos de PC con precios."""
+    def __init__(self):
+        options = [
+            discord.SelectOption(
+                label="Complex de PC",
+                value="Complex de PC",
+                description="Semana: $6 USD | Mes: $20 USD | Perma: $55 USD",
+                emoji="💻"
+            ),
+            discord.SelectOption(
+                label="BR Mods",
+                value="BR Mods",
+                description="Semana: $6 USD | Mes: $15 USD | Perma: $55 USD",
+                emoji="🔥"
+            )
+        ]
+        super().__init__(
+            placeholder="💻 Selecciona un producto de PC...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="ticket_select_pc",
+            row=1
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        selected = self.values[0]
+        interaction.client.user_ticket_selections[interaction.user.id] = selected
+        logger.info(f"💻 [SELECCIÓN PC] {interaction.user.name} eligió: {selected}. Creando ticket...")
+        await create_ticket_for_user(interaction, selected)
+
+
+class TicketPanelView(discord.ui.View):
+    """Vista principal con los 2 combos y el botón de Generar Ticket (Persistente)."""
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(TicketSelectIOS())
+        self.add_item(TicketSelectPC())
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item):
+        logger.error(f"❌ Error en interacción de vista de tickets [{item}]: {error}", exc_info=True)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ Ocurrió un error al procesar tu selección. Por favor intenta de nuevo.", ephemeral=True)
+            else:
+                await interaction.followup.send("❌ Ocurrió un error al procesar tu selección. Por favor intenta de nuevo.", ephemeral=True)
+        except Exception:
+            pass
+
+    @discord.ui.button(
+        label="Generar Ticket",
+        style=discord.ButtonStyle.success,
+        emoji="🎫",
+        custom_id="ticket_btn_create",
+        row=2
+    )
+    async def generate_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        logger.info(f"🎫 Botón 'Generar Ticket' presionado por {interaction.user.name} ({interaction.user.id})")
+        client = interaction.client
+        selected_product = client.user_ticket_selections.get(interaction.user.id)
+
+        # Si aún no seleccionó nada en el menú desplegable
+        if not selected_product:
+            await interaction.response.send_message(
+                "⚠️ **Debes seleccionar un producto primero.**\n"
+                "Por favor, elige una opción en el menú de **iOS** o **PC** (Panel, Proxy, Complex o BR Mods).",
+                ephemeral=True
+            )
+            return
+
+        await create_ticket_for_user(interaction, selected_product)
+
+
+class TicketConfirmCloseView(discord.ui.View):
+    """Confirmación para cerrar el ticket."""
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    @discord.ui.button(label="Sí, cerrar y borrar", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("🔒 **Cerrando ticket...** El canal se eliminará en 5 segundos.")
+        await asyncio.sleep(5)
+        try:
+            await interaction.channel.delete(reason=f"Ticket cerrado por {interaction.user.name}")
+        except Exception as e:
+            logger.error(f"Error borrando canal de ticket: {e}")
+
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary, emoji="✖️")
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("❌ Operación cancelada. El ticket permanece abierto.", ephemeral=True)
+
+
+class TicketCloseView(discord.ui.View):
+    """Botón persistente para cerrar el ticket."""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Cerrar Ticket",
+        style=discord.ButtonStyle.danger,
+        emoji="🔒",
+        custom_id="ticket_btn_close"
+    )
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        confirm_view = TicketConfirmCloseView()
+        await interaction.response.send_message(
+            "⚠️ **¿Estás seguro de que deseas cerrar y eliminar este ticket?**",
+            view=confirm_view,
+            ephemeral=True
+        )
+
+
+# ==========================================
+# 🤖 CLASE PRINCIPAL DEL BOT (DENZER VOICE + TICKETS)
+# ==========================================
+
 class DenzerVoiceBot(discord.Client):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
         self.tree = app_commands.CommandTree(self)
         self.target_channel_id = VOICE_CHANNEL_ID
+        self.ticket_channel_id = TICKET_CHANNEL_ID
         self.guild_id = GUILD_ID
         self.connection_lock = asyncio.Lock()
         self.audio_queue = asyncio.Queue()
         self.is_playing_speech = False
         self.user_join_cooldowns = {}
+        self.user_ticket_selections = {}
         self.start_time = time.time()
         self.current_status_index = 0
         self.watchdog_fail_count = 0
+        self.last_voice_reconnect = 0
+        self.is_connecting_voice = False
 
         self.setup_slash_commands()
+
+    async def setup_hook(self):
+        """Registra vistas persistentes de Discord antes de iniciar eventos."""
+        self.add_view(TicketPanelView())
+        self.add_view(TicketCloseView())
+        logger.info("🧩 Vistas persistentes del Sistema de Tickets registradas correctamente.")
+
+    async def on_interaction(self, interaction: discord.Interaction):
+        """Monitoreo de interacciones en tiempo real."""
+        logger.info(f"📥 Interacción recibida | Usuario: {interaction.user.name} | Tipo: {interaction.type.name}")
+
+    def create_ticket_panel_embed(self, guild: Optional[discord.Guild] = None) -> discord.Embed:
+        """Crea el mensaje Embed estético para el panel de tickets con la lista de precios oficial."""
+        embed = discord.Embed(
+            title="🛒 Tienda Denzel XT | Sistema de Tickets",
+            description=(
+                "¡Bienvenido a la tienda oficial de **Denzel XT**! 💸\n\n"
+                "Selecciona el producto que deseas adquirir en los menús desplegables de abajo.\n"
+                "Se creará tu canal privado al instante donde los vendedores te atenderán.\n"
+            ),
+            color=discord.Color.from_rgb(255, 215, 0)
+        )
+        embed.add_field(
+            name="🍎 Productos iOS",
+            value=(
+                "📱 **Panel de iOS**\n"
+                "└ *Mes:* **$20 USD** • *Perma:* **$50 USD**\n\n"
+                "🌐 **Proxy de iOS**\n"
+                "└ *2 Semanas:* **$20 USD** • *Mes:* **$35 USD** • *Perma:* **$100 USD**"
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="💻 Productos PC",
+            value=(
+                "💻 **Complex de PC**\n"
+                "└ *Semana:* **$6 USD** • *Mes:* **$20 USD** • *Perma:* **$55 USD**\n\n"
+                "🔥 **BR Mods**\n"
+                "└ *Semana:* **$6 USD** • *Mes:* **$15 USD** • *Perma:* **$55 USD**"
+            ),
+            inline=False
+        )
+        embed.set_footer(
+            text="Denzel XT • Precios oficiales en USD • Soporte y Ventas 24/7",
+            icon_url=guild.icon.url if (guild and guild.icon) else None
+        )
+        return embed
+
+    async def ensure_ticket_panel(self):
+        """Verifica si el panel de tickets ya está publicado en el canal asignado; si no, lo envía o actualiza."""
+        try:
+            channel = self.get_channel(self.ticket_channel_id)
+            if not channel:
+                try:
+                    channel = await self.fetch_channel(self.ticket_channel_id)
+                except Exception as e:
+                    logger.warning(f"⚠️ No se pudo acceder al canal de tickets (ID: {self.ticket_channel_id}): {e}")
+                    return
+
+            panel_found = False
+            async for msg in channel.history(limit=30):
+                if msg.author.id == self.user.id and msg.embeds:
+                    for emb in msg.embeds:
+                        if emb.title and "Sistema de Tickets" in emb.title:
+                            panel_found = True
+                            # Actualizar mensaje con el nuevo Embed con precios y vista limpia de combos
+                            try:
+                                await msg.edit(
+                                    embed=self.create_ticket_panel_embed(channel.guild),
+                                    view=TicketPanelView()
+                                )
+                                logger.info(f"📋 Panel de tickets en #{channel.name} (ID: {msg.id}) actualizado con precios y combos reiniciados.")
+                            except Exception as e:
+                                logger.warning(f"Aviso actualizando panel: {e}")
+                            break
+                if panel_found:
+                    break
+
+            if not panel_found:
+                embed = self.create_ticket_panel_embed(channel.guild)
+                view = TicketPanelView()
+                await channel.send(embed=embed, view=view)
+                logger.info(f"📨 Panel de tickets enviado exitosamente al canal #{channel.name} ({channel.id}).")
+        except Exception as e:
+            logger.error(f"❌ Error al revisar/enviar panel de tickets: {e}")
 
     def setup_slash_commands(self):
         @self.tree.command(name="tts", description="Lee tu mensaje en voz alta en el canal de voz para los que no tienen mic")
@@ -154,16 +576,23 @@ class DenzerVoiceBot(discord.Client):
             except Exception as e:
                 logger.error(f"Error generando TTS de comando /tts: {e}")
 
+        @self.tree.command(name="panel_tickets", description="Publica el panel oficial de tickets en un canal")
+        @app_commands.describe(canal="Canal donde publicar el panel (opcional, por defecto el configurado)")
+        @app_commands.default_permissions(administrator=True)
+        async def panel_tickets_cmd(interaction: discord.Interaction, canal: Optional[discord.TextChannel] = None):
+            target = canal or self.get_channel(self.ticket_channel_id) or interaction.channel
+            embed = self.create_ticket_panel_embed(interaction.guild)
+            view = TicketPanelView()
+            await target.send(embed=embed, view=view)
+            await interaction.response.send_message(f"✅ Panel de tickets publicado en {target.mention}.", ephemeral=True)
+
     async def start_cloud_health_server(self):
-        """
-        Servidor HTTP liviano para despliegue en la nube (Railway / Render / Koyeb).
-        Responde '200 OK' al healthcheck de Railway para evitar que el contenedor se reinicie a los 2 minutos.
-        """
+        """Servidor HTTP liviano para Railway/Render."""
         try:
             app = web.Application()
             async def handle_ping(request):
                 uptime_str = format_uptime(time.time() - self.start_time)
-                return web.Response(text=f"OK - Denzer 24/7 Voice Bot Online (Uptime: {uptime_str})")
+                return web.Response(text=f"OK - Denzer Bot Online (Uptime: {uptime_str})")
 
             app.router.add_get("/", handle_ping)
             app.router.add_get("/health", handle_ping)
@@ -172,7 +601,7 @@ class DenzerVoiceBot(discord.Client):
             await runner.setup()
             site = web.TCPSite(runner, "0.0.0.0", PORT)
             await site.start()
-            logger.info(f"🌐 Servidor de salud activo en puerto {PORT} (Protección Anti-Reinicio Cloud).")
+            logger.info(f"🌐 Servidor de salud activo en puerto {PORT}.")
         except Exception as e:
             logger.debug(f"Aviso servidor de salud HTTP: {e}")
 
@@ -180,25 +609,24 @@ class DenzerVoiceBot(discord.Client):
         logger.info("=" * 65)
         logger.info(f"🟢 BOT EN LÍNEA: {self.user.name} ({self.user.id})")
         logger.info(f"🔊 Canal de Voz Objetivo: {self.target_channel_id}")
-        logger.info("🎙️ Saludo: 'Bienvenido papi [Username]' (Voz Latina Real)")
-        logger.info("💬 TTS de Chat: Activado (Texto libre y comando /tts)")
-        logger.info("🛡️ Modo 24/7 Inmortal: Activado (Keepalive Nativo Opus + Anti-Desconexión)")
+        logger.info(f"🎫 Canal de Tickets Objetivo: {self.ticket_channel_id}")
+        logger.info("🛒 Sistema de Tickets de Compra con Precios: Activo")
         logger.info("=" * 65)
 
         # Iniciar servidor web de salud para Railway si aplica
         await self.start_cloud_health_server()
 
-        # Sincronizar comando Slash /tts en el servidor
+        # Asegurar que el panel de tickets esté publicado y actualizado con los precios
+        await self.ensure_ticket_panel()
+
+        # Sincronizar comandos Slash en el servidor
         try:
             guild_obj = discord.Object(id=self.guild_id)
             self.tree.copy_global_to(guild=guild_obj)
             await self.tree.sync(guild=guild_obj)
-            logger.info("⚡ Comandos Slash (/tts) sincronizados en el servidor.")
+            logger.info("⚡ Comandos Slash sincronizados.")
         except Exception as e:
             logger.warning(f"Aviso al sincronizar slash commands: {e}")
-
-        # Conectar al canal fijado
-        await self.ensure_voice_connection()
 
         # Iniciar loops en segundo plano
         if not self.voice_watchdog.is_running():
@@ -211,14 +639,17 @@ class DenzerVoiceBot(discord.Client):
             self.status_rotator.start()
 
     async def ensure_voice_connection(self):
-        """
-        Asegura la conexión ininterrumpida al canal de voz objetivo.
-        NO destruye conexiones vivas para garantizar que el contador de horas no se reinicie.
-        """
-        if self.connection_lock.locked():
+        """Asegura la conexión al canal de voz de forma segura."""
+        if self.is_connecting_voice or self.connection_lock.locked():
             return
 
+        now = time.time()
+        if now - self.last_voice_reconnect < 10.0:
+            return
+        self.last_voice_reconnect = now
+
         async with self.connection_lock:
+            self.is_connecting_voice = True
             try:
                 target_channel = self.get_channel(self.target_channel_id)
                 if not target_channel:
@@ -231,23 +662,18 @@ class DenzerVoiceBot(discord.Client):
                 guild = target_channel.guild
                 voice_client = guild.voice_client
 
-                # CASO 1: Si ya está en el canal fijado y conectado, NO TOCAR NADA (evita reiniciar el tiempo)
                 if voice_client and voice_client.is_connected() and voice_client.channel.id == self.target_channel_id:
                     self.watchdog_fail_count = 0
                     return
 
-                # CASO 2: Si el bot fue arrastrado/movido a otro canal de voz, moverlo de vuelta suavemente
                 if voice_client and voice_client.is_connected() and voice_client.channel.id != self.target_channel_id:
-                    logger.warning(f"⚠️ Bot fuera de su canal. Moviendo suavemente a '{target_channel.name}'...")
                     try:
                         await asyncio.wait_for(voice_client.move_to(target_channel), timeout=5.0)
-                        logger.info(f"✅ Bot devuelto a '{target_channel.name}'.")
                         self.watchdog_fail_count = 0
                         return
-                    except Exception as e:
-                        logger.warning(f"Aviso al mover directo ({e}), reconectando...")
+                    except Exception:
+                        pass
 
-                # CASO 3: Desconexión real comprobada, reconectar limpiamente
                 if voice_client:
                     try:
                         await voice_client.disconnect(force=True)
@@ -257,89 +683,56 @@ class DenzerVoiceBot(discord.Client):
 
                 logger.info(f"🔄 Conectando a canal '{target_channel.name}' (ID: {self.target_channel_id})...")
                 try:
-                    await target_channel.connect(reconnect=True, timeout=30.0, self_deaf=False)
-                    logger.info(f"✅ ¡CONECTADO CON ÉXITO A: '{target_channel.name}'!")
+                    await target_channel.connect(reconnect=False, timeout=15.0, self_deaf=False)
+                    logger.info(f"✅ ¡Conectado con éxito a '{target_channel.name}'!")
                     self.watchdog_fail_count = 0
-                except discord.ClientException as ce:
-                    logger.warning(f"Aviso al conectar ({ce}), reintentando conexión limpia...")
-                    if guild.voice_client:
-                        await guild.voice_client.disconnect(force=True)
-                        await asyncio.sleep(1.5)
-                        await target_channel.connect(reconnect=True, timeout=30.0, self_deaf=False)
-                        self.watchdog_fail_count = 0
+                except Exception as ce:
+                    logger.warning(f"Aviso de conexión al canal de voz: {ce}")
 
             except Exception as e:
-                logger.error(f"❌ Error en conexión de voz: {e}")
+                logger.debug(f"Aviso en ensure_voice_connection: {e}")
+            finally:
+                self.is_connecting_voice = False
 
-    @tasks.loop(seconds=20)
+    @tasks.loop(seconds=30)
     async def voice_keepalive(self):
-        """
-        Envía un paquete nativo Opus silencioso de 3 bytes periódicamente.
-        Mantiene el Voice Gateway de Discord activo 24/7 sin desincronización RTP ni consumo de CPU.
-        """
+        """Mantiene el estado."""
         try:
             target_channel = self.get_channel(self.target_channel_id)
             if not target_channel or not target_channel.guild.voice_client:
                 return
-
-            vc = target_channel.guild.voice_client
-            if vc and vc.is_connected() and not vc.is_playing() and not self.is_playing_speech:
-                # Frame oficial Opus de silencio (3 bytes)
-                vc.send_audio_packet(b'\xF8\xFF\xFE', encode=False)
         except Exception as e:
             logger.debug(f"Aviso keepalive: {e}")
 
     async def generate_speech_audio(self, text_to_say: str) -> str:
-        """Genera el audio en MP3 usando la voz neuronal latina realista (es-MX-DaliaNeural)."""
+        """Genera el audio en MP3."""
         file_path = os.path.join(AUDIO_TEMP_DIR, f"tts_{int(asyncio.get_event_loop().time() * 1000)}.mp3")
-
         try:
             tts = edge_tts.Communicate(text_to_say, voice="es-MX-DaliaNeural", rate="+3%", pitch="-1Hz")
             await tts.save(file_path)
-        except Exception as e:
-            logger.warning(f"Aviso en Edge-TTS ({e}), usando gTTS como respaldo...")
+        except Exception:
             def make_gtts():
                 g = gTTS(text=text_to_say, lang="es", tld="com.mx")
                 g.save(file_path)
             await asyncio.to_thread(make_gtts)
-
         return file_path
 
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        """
-        1. Protecciones Anti-Kick y Anti-Move para el Bot.
-        2. Saludo con voz latina: 'Bienvenido papi [Username]' al entrar.
-        """
-        # Caso 1: Eventos del propio bot
+        """Saludos y eventos de voz."""
         if member.id == self.user.id:
-            if after.channel is None:
-                logger.warning("🚨 ¡ALERTA! El bot fue desconectado del canal.")
-                logger.info("🛡️ Reconectando con gracia de 2 segundos para sesión limpia...")
-                await asyncio.sleep(2.0)
-                await self.ensure_voice_connection()
-            elif after.channel.id != self.target_channel_id:
-                logger.warning(f"🚨 ¡ALERTA! El bot fue movido a '{after.channel.name}'.")
-                logger.info("🛡️ Regresando al canal fijado suavemente...")
-                await asyncio.sleep(1.0)
-                await self.ensure_voice_connection()
             return
 
-        # Ignorar otros bots
         if member.bot:
             return
 
-        # Caso 2: CUALQUIER usuario ENTRA al canal objetivo
         if after.channel and after.channel.id == self.target_channel_id and (before.channel is None or before.channel.id != self.target_channel_id):
             loop_time = asyncio.get_event_loop().time()
             last_join = self.user_join_cooldowns.get(member.id, 0)
-
             if loop_time - last_join < 2:
                 return
 
             self.user_join_cooldowns[member.id] = loop_time
             clean_name = extract_natural_name(member)
-
-            logger.info(f"👋 [ENTRADA] {member.display_name} ({clean_name}) entró al canal. Encolando saludo...")
 
             saludos = [
                 f"Hola {clean_name}, bienvenido papi, qué bueno que llegaste a la sala.",
@@ -356,10 +749,13 @@ class DenzerVoiceBot(discord.Client):
                 logger.error(f"Error generando audio de bienvenida: {e}")
 
     async def on_message(self, message: discord.Message):
-        """
-        TTS DE CHAT: Lee en voz alta lo que se escriba en el chat de la llamada.
-        """
+        """TTS de chat para llamadas."""
         if message.author.bot or message.author.id == self.user.id:
+            return
+
+        if message.channel.id == self.ticket_channel_id:
+            return
+        if hasattr(message.channel, "name") and message.channel.name.startswith("ticket-"):
             return
 
         is_target_channel = (message.channel.id == self.target_channel_id)
@@ -369,7 +765,6 @@ class DenzerVoiceBot(discord.Client):
             return
 
         if not message.content:
-            logger.warning(f"⚠️ Mensaje de {message.author} detectado, pero Discord ocultó el texto por falta de 'MESSAGE CONTENT INTENT'.")
             return
 
         cleaned_text = clean_chat_message(message.content)
@@ -377,8 +772,6 @@ class DenzerVoiceBot(discord.Client):
             return
 
         author_name = extract_natural_name(message.author)
-        logger.info(f"💬 [CHAT TTS] {message.author.display_name} ({author_name}): '{cleaned_text}'")
-
         speech_text = f"{author_name} dice: {cleaned_text}"
 
         try:
@@ -390,11 +783,11 @@ class DenzerVoiceBot(discord.Client):
             audio_file = await self.generate_speech_audio(speech_text)
             await self.audio_queue.put(audio_file)
         except Exception as e:
-            logger.error(f"Error generando audio TTS de chat: {e}")
+            logger.error(f"Error TTS chat: {e}")
 
     @tasks.loop(seconds=1)
     async def audio_worker(self):
-        """Procesa y reproduce la fila de audios en orden sin interrupciones."""
+        """Procesador de cola de audio."""
         if self.audio_queue.empty() or self.is_playing_speech:
             return
 
@@ -411,7 +804,6 @@ class DenzerVoiceBot(discord.Client):
             return
 
         self.is_playing_speech = True
-        logger.info("🎙️ Reproduciendo locución...")
 
         if voice_client.is_playing():
             voice_client.stop()
@@ -421,7 +813,7 @@ class DenzerVoiceBot(discord.Client):
 
         def after_play(err):
             if err:
-                logger.error(f"Error en reproducción: {err}")
+                logger.error(f"Error reproducción: {err}")
             try:
                 if os.path.exists(audio_file):
                     os.remove(audio_file)
@@ -434,16 +826,13 @@ class DenzerVoiceBot(discord.Client):
             voice_client.play(audio_source, after=after_play)
             await asyncio.wait_for(finish_event.wait(), timeout=15.0)
         except Exception as e:
-            logger.error(f"Detalle en audio worker: {e}")
+            logger.error(f"Audio worker error: {e}")
         finally:
             self.is_playing_speech = False
 
-    @tasks.loop(seconds=15)
+    @tasks.loop(seconds=20)
     async def voice_watchdog(self):
-        """
-        Guardián de conexión inteligente.
-        Revisa la conexión cada 15 segundos sin matar conexiones saludables que estén en auto-reconexión.
-        """
+        """Guardián de conexión de voz pasivo."""
         try:
             target_channel = self.get_channel(self.target_channel_id)
             if not target_channel:
@@ -454,15 +843,11 @@ class DenzerVoiceBot(discord.Client):
 
             if not voice_client or not voice_client.is_connected():
                 self.watchdog_fail_count += 1
-                logger.warning(f"🔍 [Guardián] Sin conexión activa detectada ({self.watchdog_fail_count}/2)...")
-                # Solo forzar reconexión si ha fallado de forma persistente (2 chequeos consecutivos = 30s)
-                if self.watchdog_fail_count >= 2:
-                    logger.info("🔍 [Guardián] Restaurando conexión al canal fijado...")
+                if self.watchdog_fail_count >= 3:
                     await self.ensure_voice_connection()
             else:
                 self.watchdog_fail_count = 0
                 if voice_client.channel.id != self.target_channel_id:
-                    logger.warning("🔍 [Guardián] Canal diferente detectado. Restaurando...")
                     await self.ensure_voice_connection()
 
         except Exception as e:
@@ -470,13 +855,13 @@ class DenzerVoiceBot(discord.Client):
 
     @tasks.loop(seconds=20)
     async def status_rotator(self):
-        """Rota los estados en el perfil del bot mostrando el tiempo activo real (horas y minutos)."""
+        """Rota presencia en Discord."""
         try:
             uptime_str = format_uptime(time.time() - self.start_time)
             status_list = [
                 f"24/7 Online ⏱️ {uptime_str}",
                 "Denzel XT 💸 | 100% Inmortal",
-                "Leyendo Chat de Voz 🎙️",
+                "Tickets de Venta Activos 🎫",
                 "Usa /tts para hablar 💬"
             ]
 
@@ -499,7 +884,6 @@ class DenzerVoiceBot(discord.Client):
         await self.wait_until_ready()
 
 def run_bot():
-    # Asegurar instancia única local
     ensure_single_local_instance()
 
     if not TOKEN:
