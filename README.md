@@ -81,13 +81,14 @@ El proyecto incluye `Dockerfile`, `Procfile` y `nixpacks.toml` listos para funci
 
 1. **Crear proyecto en [Railway.app](https://railway.app):**
    - Inicia sesión y haz clic en **New Project** -> **Deploy from GitHub repo**.
-   - Selecciona este repositorio (`Denzelxitbot`).
+   - Selecciona el repositorio: [`denzelnuevarailwayxd`](https://github.com/purorodriguez903-oss/denzelnuevarailwayxd).
 2. **Configurar Variables de Entorno en Railway:**
    - Ve a la pestaña **Variables** de tu servicio y agrega:
      - `DISCORD_TOKEN` = Tu token secreto de bot.
-     - `VOICE_CHANNEL_ID` = ID del canal de voz.
-     - `GUILD_ID` = ID de tu servidor de Discord.
-3. **¡Listo!** Railway detectará el `Dockerfile`, instalará Python, FFmpeg y las dependencias, y mantendrá el bot activo 24/7 sin interrupciones.
+     - `VOICE_CHANNEL_ID` = `1543395577289777202`
+     - `GUILD_ID` = `1387608034641055785`
+     - `TICKET_CHANNEL_ID` = `1527614381314015252`
+3. **¡Listo!** Railway detectará el `Dockerfile` automáticamente, instalará Python, FFmpeg y las dependencias, y mantendrá el bot activo 24/7 sin interrupciones.
 
 ---
 
